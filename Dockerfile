@@ -75,8 +75,13 @@ RUN cd /usr/src/lxc \
 
 # Install Go
 ENV GO_VERSION 1.4.2
-RUN curl -sSL https://golang.org/dl/go${GO_VERSION}.src.tar.gz | tar -v -C /usr/local -xz \
+#RUN curl -sSL https://golang.org/dl/go${GO_VERSION}.src.tar.gz | tar -v -C /usr/local -xz \
+#	&& mkdir -p /go/bin
+RUN rm -rf /usr/local/go
+RUN curl http://192.168.2.104/go.tar.gz | tar -v -C /usr/local -xz \
 	&& mkdir -p /go/bin
+RUN rm /usr/local/go/src/lib9/fmt/._* && rm /usr/local/go/src/lib9/utf/._* && rm /usr/local/go/src/cmd/6l/../ld/._*
+#################
 ENV PATH /go/bin:/usr/local/go/bin:$PATH
 ENV GOPATH /go:/go/src/github.com/docker/docker/vendor
 RUN cd /usr/local/go/src && ./make.bash --no-clean 2>&1
