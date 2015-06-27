@@ -11,21 +11,6 @@ import (
 	"github.com/go-check/check"
 )
 
-func (s *DockerSuite) TestLegacyImages(c *check.C) {
-	status, body, err := sockRequest("GET", "/v1.6/images/json", nil)
-	c.Assert(status, check.Equals, http.StatusOK)
-	c.Assert(err, check.IsNil)
-
-	images := []types.LegacyImage{}
-	if err = json.Unmarshal(body, &images); err != nil {
-		c.Fatalf("Error on unmarshal: %s", err)
-	}
-
-	if len(images) == 0 || images[0].Tag == "" || images[0].Repository == "" {
-		c.Fatalf("Bad data: %q", images)
-	}
-}
-
 func (s *DockerSuite) TestApiImagesFilter(c *check.C) {
 	name := "utest:tag1"
 	name2 := "utest/docker:tag2"
@@ -117,7 +102,33 @@ func (s *DockerSuite) TestApiImagesDelete(c *check.C) {
 	c.Assert(status, check.Equals, http.StatusConflict)
 	c.Assert(err, check.IsNil)
 
+	status, _, err = sockRequest("DELETE", "/images/test:noexist", nil)
+	c.Assert(status, check.Equals, http.StatusNotFound) //Status Codes:404 – no such image
+	c.Assert(err, check.IsNil)
+
 	status, _, err = sockRequest("DELETE", "/images/test:tag1", nil)
 	c.Assert(status, check.Equals, http.StatusOK)
 	c.Assert(err, check.IsNil)
+}
+
+func (s *DockerSuite) TestApiImagesHistory(c *check.C) {
+	testRequires(c, Network)
+	name := "test-api-images-history"
+	out, err := buildImage(name, "FROM hello-world\nENV FOO bar", false)
+	c.Assert(err, check.IsNil)
+
+	defer deleteImages(name)
+	id := strings.TrimSpace(out)
+
+	status, body, err := sockRequest("GET", "/images/"+id+"/history", nil)
+	c.Assert(err, check.IsNil)
+	c.Assert(status, check.Equals, http.StatusOK)
+
+	var historydata []types.ImageHistory
+	if err = json.Unmarshal(body, &historydata); err != nil {
+		c.Fatalf("Error on unmarshal: %s", err)
+	}
+
+	c.Assert(len(historydata), check.Not(check.Equals), 0)
+	c.Assert(historydata[0].Tags[0], check.Equals, "test-api-images-history:latest")
 }

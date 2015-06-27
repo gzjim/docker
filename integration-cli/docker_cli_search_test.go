@@ -53,7 +53,7 @@ func (s *DockerSuite) TestSearchCmdOptions(c *check.C) {
 		c.Fatalf("failed to get search help information: %s, %v", out, err)
 	}
 
-	if !strings.Contains(out, "Usage: docker search [OPTIONS] TERM") {
+	if !strings.Contains(out, "Usage:\tdocker search [OPTIONS] TERM") {
 		c.Fatalf("failed to show docker search usage: %s, %v", out, err)
 	}
 
@@ -61,6 +61,16 @@ func (s *DockerSuite) TestSearchCmdOptions(c *check.C) {
 	outSearchCmd, exitCode, err := runCommandWithOutput(searchCmd)
 	if err != nil || exitCode != 0 {
 		c.Fatalf("failed to search on the central registry: %s, %v", outSearchCmd, err)
+	}
+
+	searchCmdNotrunc := exec.Command(dockerBinary, "search", "--no-trunc=true", "busybox")
+	outSearchCmdNotrunc, _, err := runCommandWithOutput(searchCmdNotrunc)
+	if err != nil {
+		c.Fatalf("failed to search on the central registry: %s, %v", outSearchCmdNotrunc, err)
+	}
+
+	if len(outSearchCmd) > len(outSearchCmdNotrunc) {
+		c.Fatalf("The no-trunc option can't take effect.")
 	}
 
 	searchCmdautomated := exec.Command(dockerBinary, "search", "--automated=true", "busybox")

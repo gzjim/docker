@@ -3,6 +3,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"fmt"
 	"io"
 	"os"
@@ -13,18 +14,15 @@ import (
 	apiserver "github.com/docker/docker/api/server"
 	"github.com/docker/docker/autogen/dockerversion"
 	"github.com/docker/docker/daemon"
-	_ "github.com/docker/docker/daemon/execdriver/lxc"
-	_ "github.com/docker/docker/daemon/execdriver/native"
 	"github.com/docker/docker/pkg/homedir"
 	flag "github.com/docker/docker/pkg/mflag"
 	"github.com/docker/docker/pkg/pidfile"
 	"github.com/docker/docker/pkg/signal"
-	"github.com/docker/docker/pkg/system"
 	"github.com/docker/docker/pkg/timeutils"
+	"github.com/docker/docker/pkg/tlsconfig"
 	"github.com/docker/docker/registry"
+	"github.com/docker/docker/utils"
 )
-
-const CanDaemon = true
 
 var (
 	daemonCfg   = &daemon.Config{}
@@ -32,6 +30,9 @@ var (
 )
 
 func init() {
+	if daemonCfg.LogConfig.Config == nil {
+		daemonCfg.LogConfig.Config = make(map[string]string)
+	}
 	daemonCfg.InstallFlags()
 	registryCfg.InstallFlags()
 }
@@ -77,12 +78,20 @@ func migrateKey() (err error) {
 }
 
 func mainDaemon() {
+	if utils.ExperimentalBuild() {
+		logrus.Warn("Running experimental build")
+	}
+
 	if flag.NArg() != 0 {
 		flag.Usage()
 		return
 	}
 
 	logrus.SetFormatter(&logrus.TextFormatter{TimestampFormat: timeutils.RFC3339NanoFixed})
+
+	if err := setDefaultUmask(); err != nil {
+		logrus.Fatalf("Failed to set umask: %v", err)
+	}
 
 	var pfile *pidfile.PidFile
 	if daemonCfg.Pidfile != "" {
@@ -97,6 +106,40 @@ func mainDaemon() {
 			}
 		}()
 	}
+
+	serverConfig := &apiserver.ServerConfig{
+		Logging:     true,
+		EnableCors:  daemonCfg.EnableCors,
+		CorsHeaders: daemonCfg.CorsHeaders,
+		Version:     dockerversion.VERSION,
+	}
+	serverConfig = setPlatformServerConfig(serverConfig, daemonCfg)
+
+	if *flTls {
+		if *flTlsVerify {
+			tlsOptions.ClientAuth = tls.RequireAndVerifyClientCert
+		}
+		tlsConfig, err := tlsconfig.Server(tlsOptions)
+		if err != nil {
+			logrus.Fatal(err)
+		}
+		serverConfig.TLSConfig = tlsConfig
+	}
+
+	api := apiserver.New(serverConfig)
+
+	// The serve API routine never exits unless an error occurs
+	// We need to start it as a goroutine and wait on it so
+	// daemon doesn't exit
+	serveAPIWait := make(chan error)
+	go func() {
+		if err := api.ServeApi(flHosts); err != nil {
+			logrus.Errorf("ServeAPI error: %v", err)
+			serveAPIWait <- err
+			return
+		}
+		serveAPIWait <- nil
+	}()
 
 	if err := migrateKey(); err != nil {
 		logrus.Fatal(err)
@@ -122,34 +165,6 @@ func mainDaemon() {
 		"execdriver":  d.ExecutionDriver().Name(),
 		"graphdriver": d.GraphDriver().String(),
 	}).Info("Docker daemon")
-
-	serverConfig := &apiserver.ServerConfig{
-		Logging:     true,
-		EnableCors:  daemonCfg.EnableCors,
-		CorsHeaders: daemonCfg.CorsHeaders,
-		Version:     dockerversion.VERSION,
-		SocketGroup: daemonCfg.SocketGroup,
-		Tls:         *flTls,
-		TlsVerify:   *flTlsVerify,
-		TlsCa:       *flCa,
-		TlsCert:     *flCert,
-		TlsKey:      *flKey,
-	}
-
-	api := apiserver.New(serverConfig)
-
-	// The serve API routine never exits unless an error occurs
-	// We need to start it as a goroutine and wait on it so
-	// daemon doesn't exit
-	serveAPIWait := make(chan error)
-	go func() {
-		if err := api.ServeApi(flHosts); err != nil {
-			logrus.Errorf("ServeAPI error: %v", err)
-			serveAPIWait <- err
-			return
-		}
-		serveAPIWait <- nil
-	}()
 
 	signal.Trap(func() {
 		api.Close()
@@ -195,15 +210,4 @@ func shutdownDaemon(d *daemon.Daemon, timeout time.Duration) {
 	case <-time.After(timeout * time.Second):
 		logrus.Error("Force shutdown daemon")
 	}
-}
-
-// currentUserIsOwner checks whether the current user is the owner of the given
-// file.
-func currentUserIsOwner(f string) bool {
-	if fileInfo, err := system.Stat(f); err == nil && fileInfo != nil {
-		if int(fileInfo.Uid()) == os.Getuid() {
-			return true
-		}
-	}
-	return false
 }

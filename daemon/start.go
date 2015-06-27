@@ -20,7 +20,7 @@ func (daemon *Daemon) ContainerStart(name string, hostConfig *runconfig.HostConf
 		return fmt.Errorf("Container already started")
 	}
 
-	if _, err = daemon.verifyHostConfig(hostConfig); err != nil {
+	if _, err = daemon.verifyContainerSettings(hostConfig, nil); err != nil {
 		return err
 	}
 
@@ -33,7 +33,6 @@ func (daemon *Daemon) ContainerStart(name string, hostConfig *runconfig.HostConf
 	}
 
 	if err := container.Start(); err != nil {
-		container.LogEvent("die")
 		return fmt.Errorf("Cannot start container %s: %s", name, err)
 	}
 

@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/graph"
+	"github.com/docker/docker/graph/tags"
 	"github.com/docker/docker/pkg/parsers"
 	"github.com/docker/docker/registry"
 	"github.com/docker/docker/runconfig"
@@ -26,7 +26,7 @@ func (cli *DockerCli) pullImageCustomOut(image string, out io.Writer) error {
 	repos, tag := parsers.ParseRepositoryTag(image)
 	// pull only the image tagged 'latest' if no tag was specified
 	if tag == "" {
-		tag = graph.DEFAULTTAG
+		tag = tags.DEFAULTTAG
 	}
 	v.Set("fromImage", repos)
 	v.Set("tag", tag)
@@ -52,7 +52,7 @@ func (cli *DockerCli) pullImageCustomOut(image string, out io.Writer) error {
 		out:         out,
 		headers:     map[string][]string{"X-Registry-Auth": registryAuthHeader},
 	}
-	if err := cli.stream("POST", "/images/create?"+v.Encode(), sopts); err != nil {
+	if _, err := cli.stream("POST", "/images/create?"+v.Encode(), sopts); err != nil {
 		return err
 	}
 	return nil
@@ -95,12 +95,12 @@ func (cli *DockerCli) createContainer(config *runconfig.Config, hostConfig *runc
 	}
 
 	//create the container
-	stream, statusCode, err := cli.call("POST", "/containers/create?"+containerValues.Encode(), mergedConfig, nil)
+	stream, _, statusCode, err := cli.call("POST", "/containers/create?"+containerValues.Encode(), mergedConfig, nil)
 	//if image not found try to pull it
 	if statusCode == 404 && strings.Contains(err.Error(), config.Image) {
 		repo, tag := parsers.ParseRepositoryTag(config.Image)
 		if tag == "" {
-			tag = graph.DEFAULTTAG
+			tag = tags.DEFAULTTAG
 		}
 		fmt.Fprintf(cli.err, "Unable to find image '%s' locally\n", utils.ImageReference(repo, tag))
 
@@ -109,7 +109,7 @@ func (cli *DockerCli) createContainer(config *runconfig.Config, hostConfig *runc
 			return nil, err
 		}
 		// Retry
-		if stream, _, err = cli.call("POST", "/containers/create?"+containerValues.Encode(), mergedConfig, nil); err != nil {
+		if stream, _, _, err = cli.call("POST", "/containers/create?"+containerValues.Encode(), mergedConfig, nil); err != nil {
 			return nil, err
 		}
 	} else if err != nil {
@@ -135,7 +135,7 @@ func (cli *DockerCli) createContainer(config *runconfig.Config, hostConfig *runc
 //
 // Usage: docker create [OPTIONS] IMAGE [COMMAND] [ARG...]
 func (cli *DockerCli) CmdCreate(args ...string) error {
-	cmd := cli.Subcmd("create", "IMAGE [COMMAND] [ARG...]", "Create a new container", true)
+	cmd := cli.Subcmd("create", []string{"IMAGE [COMMAND] [ARG...]"}, "Create a new container", true)
 
 	// These are flags not stored in Config/HostConfig
 	var (
@@ -145,6 +145,7 @@ func (cli *DockerCli) CmdCreate(args ...string) error {
 	config, hostConfig, cmd, err := runconfig.Parse(cmd, args)
 	if err != nil {
 		cmd.ReportError(err.Error(), true)
+		os.Exit(1)
 	}
 	if config.Image == "" {
 		cmd.Usage()

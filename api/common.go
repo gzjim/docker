@@ -3,21 +3,27 @@ package api
 import (
 	"fmt"
 	"mime"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/Sirupsen/logrus"
 	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/pkg/system"
 	"github.com/docker/docker/pkg/version"
 	"github.com/docker/libtrust"
 )
 
 // Common constants for daemon and client.
 const (
-	APIVERSION            version.Version = "1.19"       // Current REST API version
-	DefaultDockerfileName string          = "Dockerfile" // Default filename with Docker commands, read by docker build
+	// Current REST API version
+	Version version.Version = "1.20"
+
+	// Minimun REST API version supported
+	MinVersion version.Version = "1.12"
+
+	// Default filename with Docker commands, read by docker build
+	DefaultDockerfileName string = "Dockerfile"
 )
 
 type ByPrivatePort []types.Port
@@ -107,7 +113,8 @@ func MatchesContentType(contentType, expectedType string) bool {
 // LoadOrCreateTrustKey attempts to load the libtrust key at the given path,
 // otherwise generates a new one
 func LoadOrCreateTrustKey(trustKeyPath string) (libtrust.PrivateKey, error) {
-	if err := os.MkdirAll(filepath.Dir(trustKeyPath), 0700); err != nil {
+	err := system.MkdirAll(filepath.Dir(trustKeyPath), 0700)
+	if err != nil {
 		return nil, err
 	}
 	trustKey, err := libtrust.LoadKeyFile(trustKeyPath)

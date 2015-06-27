@@ -2,6 +2,7 @@ package builder
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -13,16 +14,21 @@ import (
 	"github.com/docker/docker/builder/parser"
 	"github.com/docker/docker/cliconfig"
 	"github.com/docker/docker/daemon"
-	"github.com/docker/docker/graph"
+	"github.com/docker/docker/graph/tags"
 	"github.com/docker/docker/pkg/archive"
 	"github.com/docker/docker/pkg/httputils"
 	"github.com/docker/docker/pkg/parsers"
+	"github.com/docker/docker/pkg/progressreader"
 	"github.com/docker/docker/pkg/streamformatter"
 	"github.com/docker/docker/pkg/urlutil"
 	"github.com/docker/docker/registry"
 	"github.com/docker/docker/runconfig"
 	"github.com/docker/docker/utils"
 )
+
+// When downloading remote contexts, limit the amount (in bytes)
+// to be read from the response body in order to detect its Content-Type
+const maxPreambleLength = 100
 
 // whitelist of commands allowed for a commit/import
 var validCommitCommands = map[string]bool{
@@ -45,15 +51,15 @@ type Config struct {
 	Remove         bool
 	ForceRemove    bool
 	Pull           bool
-	JSONFormat     bool
 	Memory         int64
 	MemorySwap     int64
 	CpuShares      int64
+	CpuPeriod      int64
 	CpuQuota       int64
 	CpuSetCpus     string
 	CpuSetMems     string
-	AuthConfig     *cliconfig.AuthConfig
-	ConfigFile     *cliconfig.ConfigFile
+	CgroupParent   string
+	AuthConfigs    map[string]cliconfig.AuthConfig
 
 	Stdout  io.Writer
 	Context io.ReadCloser
@@ -78,9 +84,8 @@ func (b *Config) WaitCancelled() <-chan struct{} {
 
 func NewBuildConfig() *Config {
 	return &Config{
-		AuthConfig: &cliconfig.AuthConfig{},
-		ConfigFile: &cliconfig.ConfigFile{},
-		cancelled:  make(chan struct{}),
+		AuthConfigs: map[string]cliconfig.AuthConfig{},
+		cancelled:   make(chan struct{}),
 	}
 }
 
@@ -90,6 +95,7 @@ func Build(d *daemon.Daemon, buildConfig *Config) error {
 		tag      string
 		context  io.ReadCloser
 	)
+	sf := streamformatter.NewJSONStreamFormatter()
 
 	repoName, tag = parsers.ParseRepositoryTag(buildConfig.RepoName)
 	if repoName != "" {
@@ -97,7 +103,7 @@ func Build(d *daemon.Daemon, buildConfig *Config) error {
 			return err
 		}
 		if len(tag) > 0 {
-			if err := graph.ValidateTagName(tag); err != nil {
+			if err := tags.ValidateTagName(tag); err != nil {
 				return err
 			}
 		}
@@ -120,27 +126,50 @@ func Build(d *daemon.Daemon, buildConfig *Config) error {
 	} else if urlutil.IsURL(buildConfig.RemoteURL) {
 		f, err := httputils.Download(buildConfig.RemoteURL)
 		if err != nil {
-			return err
+			return fmt.Errorf("Error downloading remote context %s: %v", buildConfig.RemoteURL, err)
 		}
 		defer f.Body.Close()
-		dockerFile, err := ioutil.ReadAll(f.Body)
-		if err != nil {
-			return err
-		}
+		ct := f.Header.Get("Content-Type")
+		clen := int(f.ContentLength)
+		contentType, bodyReader, err := inspectResponse(ct, f.Body, clen)
 
-		// When we're downloading just a Dockerfile put it in
-		// the default name - don't allow the client to move/specify it
-		buildConfig.DockerfileName = api.DefaultDockerfileName
+		defer bodyReader.Close()
 
-		c, err := archive.Generate(buildConfig.DockerfileName, string(dockerFile))
 		if err != nil {
-			return err
+			return fmt.Errorf("Error detecting content type for remote %s: %v", buildConfig.RemoteURL, err)
 		}
-		context = c
+		if contentType == httputils.MimeTypes.TextPlain {
+			dockerFile, err := ioutil.ReadAll(bodyReader)
+			if err != nil {
+				return err
+			}
+
+			// When we're downloading just a Dockerfile put it in
+			// the default name - don't allow the client to move/specify it
+			buildConfig.DockerfileName = api.DefaultDockerfileName
+
+			c, err := archive.Generate(buildConfig.DockerfileName, string(dockerFile))
+			if err != nil {
+				return err
+			}
+			context = c
+		} else {
+			// Pass through - this is a pre-packaged context, presumably
+			// with a Dockerfile with the right name inside it.
+			prCfg := progressreader.Config{
+				In:        bodyReader,
+				Out:       buildConfig.Stdout,
+				Formatter: sf,
+				Size:      clen,
+				NewLines:  true,
+				ID:        "Downloading context",
+				Action:    buildConfig.RemoteURL,
+			}
+			context = progressreader.New(prCfg)
+		}
 	}
-	defer context.Close()
 
-	sf := streamformatter.NewStreamFormatter(buildConfig.JSONFormat)
+	defer context.Close()
 
 	builder := &Builder{
 		Daemon: d,
@@ -159,13 +188,14 @@ func Build(d *daemon.Daemon, buildConfig *Config) error {
 		Pull:            buildConfig.Pull,
 		OutOld:          buildConfig.Stdout,
 		StreamFormatter: sf,
-		AuthConfig:      buildConfig.AuthConfig,
-		ConfigFile:      buildConfig.ConfigFile,
+		AuthConfigs:     buildConfig.AuthConfigs,
 		dockerfileName:  buildConfig.DockerfileName,
 		cpuShares:       buildConfig.CpuShares,
+		cpuPeriod:       buildConfig.CpuPeriod,
 		cpuQuota:        buildConfig.CpuQuota,
 		cpuSetCpus:      buildConfig.CpuSetCpus,
 		cpuSetMems:      buildConfig.CpuSetMems,
+		cgroupParent:    buildConfig.CgroupParent,
 		memory:          buildConfig.Memory,
 		memorySwap:      buildConfig.MemorySwap,
 		cancelled:       buildConfig.WaitCancelled(),
@@ -218,6 +248,10 @@ func Commit(d *daemon.Daemon, name string, c *daemon.ContainerCommitConfig) (str
 		return "", err
 	}
 
+	if c.Config == nil {
+		c.Config = &runconfig.Config{}
+	}
+
 	newConfig, err := BuildFromConfig(d, c.Config, c.Changes)
 	if err != nil {
 		return "", err
@@ -233,4 +267,49 @@ func Commit(d *daemon.Daemon, name string, c *daemon.ContainerCommitConfig) (str
 	}
 
 	return img.ID, nil
+}
+
+// inspectResponse looks into the http response data at r to determine whether its
+// content-type is on the list of acceptable content types for remote build contexts.
+// This function returns:
+//    - a string representation of the detected content-type
+//    - an io.Reader for the response body
+//    - an error value which will be non-nil either when something goes wrong while
+//      reading bytes from r or when the detected content-type is not acceptable.
+func inspectResponse(ct string, r io.ReadCloser, clen int) (string, io.ReadCloser, error) {
+	plen := clen
+	if plen <= 0 || plen > maxPreambleLength {
+		plen = maxPreambleLength
+	}
+
+	preamble := make([]byte, plen, plen)
+	rlen, err := r.Read(preamble)
+	if rlen == 0 {
+		return ct, r, errors.New("Empty response")
+	}
+	if err != nil && err != io.EOF {
+		return ct, r, err
+	}
+
+	preambleR := bytes.NewReader(preamble)
+	bodyReader := ioutil.NopCloser(io.MultiReader(preambleR, r))
+	// Some web servers will use application/octet-stream as the default
+	// content type for files without an extension (e.g. 'Dockerfile')
+	// so if we receive this value we better check for text content
+	contentType := ct
+	if len(ct) == 0 || ct == httputils.MimeTypes.OctetStream {
+		contentType, _, err = httputils.DetectContentType(preamble)
+		if err != nil {
+			return contentType, bodyReader, err
+		}
+	}
+
+	contentType = selectAcceptableMIME(contentType)
+	var cterr error
+	if len(contentType) == 0 {
+		cterr = fmt.Errorf("unsupported Content-Type %q", ct)
+		contentType = ct
+	}
+
+	return contentType, bodyReader, cterr
 }

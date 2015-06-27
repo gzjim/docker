@@ -72,6 +72,7 @@ type Network struct {
 	Interface      *NetworkInterface `json:"interface"` // if interface is nil then networking is disabled
 	Mtu            int               `json:"mtu"`
 	ContainerID    string            `json:"container_id"` // id of the container to join network.
+	NamespacePath  string            `json:"namespace_path"`
 	HostNetworking bool              `json:"host_networking"`
 }
 
@@ -86,6 +87,11 @@ type Pid struct {
 	HostPid bool `json:"host_pid"`
 }
 
+// UTS settings of the container
+type UTS struct {
+	HostUTS bool `json:"host_uts"`
+}
+
 type NetworkInterface struct {
 	Gateway              string `json:"gateway"`
 	IPAddress            string `json:"ip"`
@@ -96,17 +102,21 @@ type NetworkInterface struct {
 	LinkLocalIPv6Address string `json:"link_local_ipv6"`
 	GlobalIPv6PrefixLen  int    `json:"global_ipv6_prefix_len"`
 	IPv6Gateway          string `json:"ipv6_gateway"`
+	HairpinMode          bool   `json:"hairpin_mode"`
 }
 
 // TODO Windows: Factor out ulimit.Rlimit
 type Resources struct {
-	Memory     int64            `json:"memory"`
-	MemorySwap int64            `json:"memory_swap"`
-	CpuShares  int64            `json:"cpu_shares"`
-	CpusetCpus string           `json:"cpuset_cpus"`
-	CpusetMems string           `json:"cpuset_mems"`
-	CpuQuota   int64            `json:"cpu_quota"`
-	Rlimits    []*ulimit.Rlimit `json:"rlimits"`
+	Memory         int64            `json:"memory"`
+	MemorySwap     int64            `json:"memory_swap"`
+	CpuShares      int64            `json:"cpu_shares"`
+	CpusetCpus     string           `json:"cpuset_cpus"`
+	CpusetMems     string           `json:"cpuset_mems"`
+	CpuPeriod      int64            `json:"cpu_period"`
+	CpuQuota       int64            `json:"cpu_quota"`
+	BlkioWeight    int64            `json:"blkio_weight"`
+	Rlimits        []*ulimit.Rlimit `json:"rlimits"`
+	OomKillDisable bool             `json:"oom_kill_disable"`
 }
 
 type ResourceStats struct {
@@ -151,6 +161,7 @@ type Command struct {
 	Network            *Network          `json:"network"`
 	Ipc                *Ipc              `json:"ipc"`
 	Pid                *Pid              `json:"pid"`
+	UTS                *UTS              `json:"uts"`
 	Resources          *Resources        `json:"resources"`
 	Mounts             []Mount           `json:"mounts"`
 	AllowedDevices     []*configs.Device `json:"allowed_devices"`

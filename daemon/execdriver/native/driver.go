@@ -47,7 +47,7 @@ func NewDriver(root, initPath string, options []string) (*driver, error) {
 		return nil, err
 	}
 
-	if err := os.MkdirAll(root, 0700); err != nil {
+	if err := sysinfo.MkdirAll(root, 0700); err != nil {
 		return nil, err
 	}
 	// native driver root is at docker_root/execdriver/native. Put apparmor at docker_root
@@ -90,8 +90,6 @@ func NewDriver(root, initPath string, options []string) (*driver, error) {
 			return nil, fmt.Errorf("Unknown option %s\n", key)
 		}
 	}
-
-	logrus.Debugf("Using %v as native.cgroupdriver", cgm)
 
 	f, err := libcontainer.New(
 		root,
@@ -245,7 +243,9 @@ func waitInPIDHost(p *libcontainer.Process, c libcontainer.Container) func() (*o
 }
 
 func (d *driver) Kill(c *execdriver.Command, sig int) error {
+	d.Lock()
 	active := d.activeContainers[c.ID]
+	d.Unlock()
 	if active == nil {
 		return fmt.Errorf("active container for %s does not exist", c.ID)
 	}
@@ -257,7 +257,9 @@ func (d *driver) Kill(c *execdriver.Command, sig int) error {
 }
 
 func (d *driver) Pause(c *execdriver.Command) error {
+	d.Lock()
 	active := d.activeContainers[c.ID]
+	d.Unlock()
 	if active == nil {
 		return fmt.Errorf("active container for %s does not exist", c.ID)
 	}
@@ -265,7 +267,9 @@ func (d *driver) Pause(c *execdriver.Command) error {
 }
 
 func (d *driver) Unpause(c *execdriver.Command) error {
+	d.Lock()
 	active := d.activeContainers[c.ID]
+	d.Unlock()
 	if active == nil {
 		return fmt.Errorf("active container for %s does not exist", c.ID)
 	}
@@ -333,7 +337,9 @@ func (d *driver) Clean(id string) error {
 }
 
 func (d *driver) Stats(id string) (*execdriver.ResourceStats, error) {
+	d.Lock()
 	c := d.activeContainers[id]
+	d.Unlock()
 	if c == nil {
 		return nil, execdriver.ErrNotRunning
 	}
